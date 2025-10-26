@@ -240,7 +240,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 👥 Authors
 
-- Your Name - Explainable Fake News Detection System
+- Kunal Bharadwaj - [GitHub](https://github.com/KunalBharadwaj)
 
 ## 🙏 Acknowledgments
 
