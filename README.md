@@ -71,7 +71,7 @@ AIProject/
 
 1. Clone the repository:
 ```bash
-cd /home/kunal/Desktop/AIProject
+git clone git@github.com:KunalBharadwaj/ForgeIt.git
 ```
 
 2. Create a virtual environment:
