@@ -251,7 +251,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📧 Contact
 
-For questions or suggestions, please open an issue or contact [your-email@example.com]
+For questions or suggestions, please open an issue or contact [bharadwajkunal172@gmail.com]
 
 ---
 
