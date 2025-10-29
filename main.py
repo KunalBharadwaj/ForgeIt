@@ -13,6 +13,9 @@ warnings.filterwarnings("ignore")
 
 from src.data_preprocessing import DataPreprocessor, create_sample_dataset
 from src.ml_models import FakeNewsMLModels, get_default_param_grids
+from src.dl_models import FakeNewsDeepLearning, TextDataset
+from torch.utils.data import DataLoader
+from transformers import BertTokenizer
 from src.utils import (
     create_directories,
     save_model,
@@ -45,8 +48,8 @@ def parse_arguments():
         "--models",
         type=str,
         default="all",
-        choices=["lr", "rf", "svm", "all"],
-        help="Models to train (lr=Logistic Regression, rf=Random Forest, svm=SVM)",
+        choices=["lr", "rf", "svm", "lstm", "bert", "all", "all-ml", "all-dl"],
+        help="Models to train (lr, rf, svm, lstm, bert, all, all-ml, all-dl)",
     )
 
     parser.add_argument(
@@ -164,18 +167,29 @@ def main():
 
     ml_models = FakeNewsMLModels(random_state=42)
 
-    models_to_train = []
-    if args.models == "all":
-        models_to_train = ["logistic_regression", "random_forest", "svm"]
-    elif args.models == "lr":
-        models_to_train = ["logistic_regression"]
-    elif args.models == "rf":
-        models_to_train = ["random_forest"]
-    elif args.models == "svm":
-        models_to_train = ["svm"]
+    ml_models_to_train = []
+    dl_models_to_train = []
+
+    if args.models in ["lr", "rf", "svm", "all-ml", "all"]:
+        if args.models == "lr":
+            ml_models_to_train = ["logistic_regression"]
+        elif args.models == "rf":
+            ml_models_to_train = ["random_forest"]
+        elif args.models == "svm":
+            ml_models_to_train = ["svm"]
+        else: # all-ml or all
+            ml_models_to_train = ["logistic_regression", "random_forest", "svm"]
+
+    if args.models in ["lstm", "bert", "all-dl", "all"]:
+        if args.models == "lstm":
+            dl_models_to_train = ["lstm"]
+        elif args.models == "bert":
+            dl_models_to_train = ["bert"]
+        else: # all-dl or all
+            dl_models_to_train = ["lstm", "bert"]
 
     # Create and train models
-    for model_name in models_to_train:
+    for model_name in ml_models_to_train:
         if model_name == "logistic_regression":
             ml_models.create_logistic_regression()
         elif model_name == "random_forest":
@@ -201,6 +215,35 @@ def main():
         # Save model
         save_model(ml_models.get_model(model_name), f"models/{model_name}.pkl")
 
+    # Step 2b: Train DL models
+    if dl_models_to_train:
+        print(f"\n[Step 2b/7] Training Deep Learning models...")
+        print("-" * 80)
+        dl_trainer = FakeNewsDeepLearning()
+
+        for model_name in dl_models_to_train:
+            if model_name == "bert":
+                tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+                train_dataset = TextDataset(X_train, y_train, tokenizer)
+                val_dataset = TextDataset(X_val, y_val, tokenizer)
+                test_dataset = TextDataset(X_test, y_test, tokenizer)
+
+                train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+                val_loader = DataLoader(val_dataset, batch_size=16)
+                test_loader = DataLoader(test_dataset, batch_size=16)
+
+                model = dl_trainer.create_bert_model()
+                dl_trainer.train_bert(model, train_loader, val_loader, epochs=1) # epochs=1 for quick demo
+                dl_trainer.save_model("bert", "models/bert.pth")
+
+            # Note: LSTM requires a different tokenizer (like Tokenizer from Keras/torchtext)
+            # and integer-encoded sequences. This is a simplified example for BERT.
+            # Adding LSTM would require more extensive changes to data preprocessing.
+            elif model_name == "lstm":
+                print("\nSkipping LSTM: Requires integer-based tokenizer not yet implemented in this script.")
+                dl_models_to_train.remove("lstm")
+
+
     # Step 3: Evaluate models
     print(f"\n[Step 3/7] Evaluating models on test set...")
     print("-" * 80)
@@ -209,19 +252,35 @@ def main():
     roc_data = {}
     cm_data = {}
 
-    for model_name in models_to_train:
+    all_trained_models = ml_models_to_train + dl_models_to_train
+
+    for model_name in all_trained_models:
         print(f"\n📈 Evaluating {model_name}...")
 
-        # Predictions
-        y_pred = ml_models.predict(model_name, X_test_tfidf)
-        y_proba = ml_models.predict_proba(model_name, X_test_tfidf)
+        if model_name in ml_models_to_train:
+            # Predictions for ML models
+            y_pred = ml_models.predict(model_name, X_test_tfidf)
+            y_proba = ml_models.predict_proba(model_name, X_test_tfidf)
+            y_proba_positive = y_proba[:, 1] if y_proba.ndim == 2 else y_proba
+        
+        elif model_name in dl_models_to_train:
+            # Predictions for DL models
+            model = dl_trainer.models[model_name]
+            # Recreate test_loader if it wasn't created (e.g. if only training one DL model)
+            if 'test_loader' not in locals():
+                 tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+                 test_dataset = TextDataset(X_test, y_test, tokenizer)
+                 test_loader = DataLoader(test_dataset, batch_size=16)
+            
+            y_pred, y_proba = dl_trainer.predict(model, test_loader)
+            y_proba_positive = y_proba[:, 1] if y_proba.ndim == 2 else y_proba
 
         # Evaluate
         results = evaluate_model(y_true=y_test, y_pred=y_pred, model_name=model_name)
         results_list.append(results)
 
         # Save for comparison plots
-        roc_data[model_name] = (y_test, y_proba[:, 1] if y_proba.ndim == 2 else y_proba)
+        roc_data[model_name] = (y_test, y_proba_positive)
         cm_data[model_name] = (y_test, y_pred)
 
         # Save individual results
@@ -238,7 +297,7 @@ def main():
         # Plot ROC curve
         plot_roc_curve(
             y_test,
-            y_proba[:, 1] if y_proba.ndim == 2 else y_proba,
+            y_proba_positive,
             model_name,
             save_path=f"{args.output_dir}/plots/{model_name}_roc_curve.png",
         )
@@ -265,12 +324,17 @@ def main():
     )
 
     # Step 5: Generate explanations with LIME & SHAP
-    if args.explain:
-        print(f"\n[Step 5/7] Generating LIME & SHAP explanations...")
+    if args.explain and ml_models_to_train:
+        print(f"\n[Step 5/7] Generating LIME & SHAP explanations (ML Models Only)...")
         print("-" * 80)
 
-        # Select best model for explanations
-        best_model_result = max(results_list, key=lambda x: x["f1_score"])
+        # Select best ML model for explanations
+        ml_results = [r for r in results_list if r["model_name"] in ml_models_to_train]
+        if not ml_results:
+            print("No ML models were trained, skipping explanations.")
+            return
+
+        best_model_result = max(ml_results, key=lambda x: x["f1_score"])
         best_model_name = best_model_result["model_name"]
         best_model = ml_models.get_model(best_model_name)
 
@@ -340,29 +404,30 @@ def main():
         print(f"\n[Step 5/7] Skipping explanations (use --explain to enable)...")
 
     # Step 6: Feature importance analysis
-    print(f"\n[Step 6/7] Analyzing feature importance...")
-    print("-" * 80)
+    if ml_models_to_train:
+        print(f"\n[Step 6/7] Analyzing feature importance (ML Models Only)...")
+        print("-" * 80)
 
-    from src.utils import get_feature_importance, plot_feature_importance
+        from src.utils import get_feature_importance, plot_feature_importance
 
-    for model_name in models_to_train:
-        if model_name != "svm":  # SVM feature importance is complex
-            try:
-                model = ml_models.get_model(model_name)
-                importance_df = get_feature_importance(
-                    model, preprocessor.vectorizer, top_n=20
-                )
+        for model_name in ml_models_to_train:
+            if model_name != "svm":  # SVM feature importance is complex
+                try:
+                    model = ml_models.get_model(model_name)
+                    importance_df = get_feature_importance(
+                        model, preprocessor.vectorizer, top_n=20
+                    )
 
-                print(f"\n{model_name} - Top 10 Features:")
-                print(importance_df.head(10).to_string(index=False))
+                    print(f"\n{model_name} - Top 10 Features:")
+                    print(importance_df.head(10).to_string(index=False))
 
-                plot_feature_importance(
-                    importance_df,
-                    model_name,
-                    save_path=f"{args.output_dir}/plots/{model_name}_feature_importance.png",
-                )
-            except Exception as e:
-                print(f"Feature importance for {model_name} failed: {e}")
+                    plot_feature_importance(
+                        importance_df,
+                        model_name,
+                        save_path=f"{args.output_dir}/plots/{model_name}_feature_importance.png",
+                    )
+                except Exception as e:
+                    print(f"Feature importance for {model_name} failed: {e}")
 
     # Step 7: Summary
     print(f"\n[Step 7/7] Training Complete!")
